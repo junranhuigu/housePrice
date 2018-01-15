@@ -1,0 +1,299 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport"
+	content="initial-scale=1.0, user-scalable=no, width=device-width">
+<title>租房信息地图</title>
+<link rel="stylesheet"
+	href="http://cache.amap.com/lbs/static/main1119.css" />
+<style>
+</style>
+<script type="text/javascript" src="jquery.min.js"></script>
+<script type="text/javascript"
+	src="http://webapi.amap.com/maps?v=1.4.1&key=6df5da9fc68f50eee4550e01fae79d04&&plugin=AMap.Scale,AMap.ToolBar,AMap.AdvancedInfoWindow,AMap.Transfer,AMap.MouseTool,AMapUI,AMap.MarkerClusterer,AMap.Geocoder,AMap.DistrictSearch,AMap.Autocomplete,AMap.PlaceSearch"></script>
+<script type="text/javascript"
+	src="http://cache.amap.com/lbs/static/addToolbar.js"></script>
+<!-- UI组件库 1.0 -->
+<script src="http://webapi.amap.com/ui/1.0/main.js?v=1.0.11"></script>
+<script type="text/javascript">
+	var map, cluster, cityCode, placeSearch;
+	var markerArray = [], lineArray = [];
+	var params = {};
+	var infoWindow = new AMap.InfoWindow({
+		autoMove : true,
+		offset : {
+			x : 0,
+			y : -30
+		}
+	});
+	var markerRight;//右键选中的marker缓存
+	$(document).ready(function() {
+		map = new AMap.Map('container', {
+			resizeEnable : true,
+			//zoom: 4,
+			//mapStyle: 'amap://styles/macaron'
+		});
+		var districtSearch = new AMap.DistrictSearch({
+			level : 'city',  
+		    subdistrict : 0
+		});
+		districtSearch.search('北京', function(status, result){
+			if(status == 'complete'){
+				cityCode = result.districtList[0].citycode;
+			}
+		});
+		var scale = new AMap.Scale({
+			visible : false
+		});
+		var toolBar = new AMap.ToolBar({
+			visible : false
+		});
+		map.addControl(scale);
+		map.addControl(toolBar);
+		scale.show();
+		toolBar.show();
+		
+		//增加图层控件
+		AMapUI.loadUI(['control/BasicControl'], function(BasicControl) {
+			 //图层切换控件
+	        map.addControl(new BasicControl.LayerSwitcher({
+	            position: 'lb'
+	        }));
+		});
+		
+		//输入提示
+	    var auto = new AMap.Autocomplete({
+	        input: "tipinput"
+	    });
+	  	//构造地点查询类
+	    placeSearch = new AMap.PlaceSearch({
+	        map : map
+	    });
+	    AMap.event.addListener(auto, "select", select);//注册监听，当选中某条记录时会触发
+
+		map.on('moveend', showCity);
+		AMap.event.addListener(map, 'zoomend', showZoomLevel);
+		
+		//初始化显示
+		showCity();
+		$('#note').hide();
+		
+		jumpBeijing();
+	});
+	function showCity() {
+		map.getCity(function(data) {
+			if (data['province'] && typeof data['province'] === 'string') {
+				$('#city').html(data['city'] || data['province']);
+			}
+		});
+		if(map.getZoom() <= 12){
+			$('#loveLine').show();
+		} else {
+			$('#loveLine').hide();
+		}
+	}
+	function showZoomLevel() {
+		var zoom = map.getZoom();
+		$('#zoomLevel').html(zoom);
+	}
+	function clearSomething() {
+		map.remove(markerArray);
+		map.remove(lineArray);
+		markerArray.length = 0;
+		lineArray.length = 0;
+	}
+	function jumpCountry(){
+		//初始化界面
+		clear();
+        map.setZoom(5);
+	}
+	function jumpBeijing(){
+		clear();
+		map.setZoomAndCenter(11, [116.397428, 39.90923]);
+	}
+	function clear(){
+		infoWindow.close();
+	}
+	function loadDataDetail(housePriceVo){
+		var reg = new RegExp(/\d+/);
+		var detail = {
+			price : reg.exec(housePriceVo.price)[0],
+			area : reg.exec(housePriceVo.area)[0],
+			mode : housePriceVo.mode,
+			from : housePriceVo.from,
+			time : housePriceVo.grepTime
+		}
+		return detail;
+	}
+	function loadData(files){
+		if(files.length > 0){
+			$('#file').hide();
+			clearSomething();
+			var file = new FileReader();
+			file.readAsText(files[0], "UTF-8");
+			file.onload = function(e){
+				//统计房屋数量
+				for(var line of this.result.split('\n')){
+					if(line == ''){
+						continue;
+					}
+					var json = $.parseJSON(line);
+					if(params[json.address] == undefined){
+						p = {
+							detail : [],
+						};
+						if(json.map != undefined){
+							p.address = json.map.detailMapAddress;
+							p.location = json.map.location;
+						}
+						params[json.address] = p;
+					}
+					params[json.address].detail.push(loadDataDetail(json));
+				}
+				//生成记录点
+				flushCluster(params);
+			}
+		}
+	}
+	function flushCluster(params, feeMin = 0, feeMax = 9000000, areaMin = 0, areaMax = 90000, type = 0){
+		if(cluster != undefined){
+			cluster.clearMarkers();
+			clearSomething();
+		}
+		for(var a in params){
+			var point = params[a];
+			var houseCount = 0;
+			var houseInfo = '';
+			var nowTime = new Date().getTime();
+			for(var d in point.detail){
+				var dd = point.detail[d];
+				var price = new Number(dd.price);
+				var area = new Number(dd.area);
+				var time = dd.time;//默认显示三天内房租数据
+				var mode = false;//租房模式
+				switch(type){
+				case 1://整租
+					if(dd.mode.indexOf('整') != -1){
+						mode = true;
+					}
+					break;
+				case 2://合租
+					if(dd.mode.indexOf('合') != -1){
+						mode = true;
+					}
+					break;
+				default:
+					mode = true;
+					break;
+				}
+				
+				if(price >= feeMin && price <= feeMax && area >= areaMin && area <= areaMax && nowTime <= 24 * 3600 * 1000 * 3 + time && mode){
+					houseCount = houseCount + 1;
+					houseInfo = houseInfo + dd.area + '平米 ' + dd.price + '元/月 ' + dd.mode + ' ' + dd.from + "\n";
+				}
+			}
+			if(houseCount > 0){
+				if(point.location != undefined && point.location != '[]'){
+					var p = point.location.split(',');
+					var ps = new AMap.LngLat(p[0], p[1]);
+					
+					var showInfo = point.address + '-' + houseCount + '\n' + houseInfo;
+					
+					var marker = new AMap.Marker({
+						map : map,
+						content: '<div style="background-color: hsla(180, 100%, 50%, 0.7); height: 24px; width: 24px; border: 1px solid hsl(180, 100%, 40%); border-radius: 12px; box-shadow: hsl(180, 100%, 50%) 0px 0px 1px;"></div>',
+						position : ps,
+						title : showInfo
+					});
+					markerArray.push(marker);
+				} else {
+					var showInfo = a + '-' + houseCount + '\n' + houseInfo;
+					console.log(showInfo);
+				}
+			}
+		}
+		//加载相关组件
+		cluster = new AMap.MarkerClusterer(map, markerArray,{
+	       		maxZoom : 16,
+	           	gridSize : 30,
+	           	averageCenter : true,
+	           	renderCluserMarker : function(context) {
+	           		var count = markerArray.length;
+	                var factor = Math.pow(context.count/count,1/18)
+	                var div = document.createElement('div');
+	                var Hue = 180 - factor* 180;
+	                var bgColor = 'hsla('+Hue+',100%,50%,0.7)';
+	                var fontColor = 'hsla('+Hue+',100%,20%,1)';
+	                var borderColor = 'hsla('+Hue+',100%,40%,1)';
+	                var shadowColor = 'hsla('+Hue+',100%,50%,1)';
+	                div.style.backgroundColor = bgColor
+	                var size = Math.round(30 + Math.pow(context.count/count,1/5) * 20);
+	                div.style.width = div.style.height = size+'px';
+	                div.style.border = 'solid 1px '+ borderColor;
+	                div.style.borderRadius = size/2 + 'px';
+	                div.style.boxShadow = '0 0 1px '+ shadowColor;
+	                div.innerHTML = context.count;
+	                div.style.lineHeight = size+'px';
+	                div.style.color = fontColor;
+	                div.style.fontSize = '14px';
+	                div.style.textAlign = 'center';
+	                context.marker.setOffset(new AMap.Pixel(-size/2,-size/2));
+	                context.marker.setContent(div)
+	            }
+	    });
+		cluster.on('click', function(context){
+			if(map.getZoom() >= 18){
+				
+			}
+		});
+		$('#file').show();
+		$('#note').show();
+	}
+	function loadDataBySearch(){
+		var feeMin = $('#feeMin').val() == '' ? 0 : $('#feeMin').val();
+		var feeMax = $('#feeMax').val() == '' ? 1000000 : $('#feeMax').val();
+		var areaMin = $('#areaMin').val() == '' ? 0 : $('#areaMin').val();
+		var areaMax = $('#areaMax').val() == '' ? 1000000 : $('#areaMax').val();
+		flushCluster(params, feeMin, feeMax, areaMin, areaMax);
+	}
+	function select(e){
+		 placeSearch.setCity(e.poi.adcode);
+	     placeSearch.search(e.poi.name);  //关键字查询查询
+	}
+</script>
+
+</head>
+<body>
+	<div id="container"></div>
+	<div id="tip">
+		当前城市：<span id="city">未知</span>，缩放级别：<span id="zoomLevel"></span><br />
+		查询地址：<input id="tipinput" type="text" /><br/>
+		<input id="file" type="file" class="button" onchange="loadData(this.files)"/>
+		<span id="note">
+			<table>
+				<tr>
+					<td>房租区间：</td>
+					<td><input type="text" id="feeMin" size="7" />—<input type="text" id="feeMax" size="7" /></td>
+				</tr>
+				<tr>
+					<td>面积区间：</td>
+					<td><input type="text" id="areaMin" size="5" />—<input type="text" id="areaMax" size="5" /></td>
+				</tr>
+				<tr>
+					<td>模式：</td>
+					<td><input type="radio" value="0" name="type" checked="checked"/>不限 <input type="radio" name="type" value="1"/>整租 <input type="radio" name="type" value="2"/>合租</td>
+				</tr>
+				<tr>
+					<td colspan="2"><input value="刷新结果" type="button" class="button" onclick="loadDataBySearch()"/></td>
+				</tr>
+			</table>
+		</span>
+	</div>
+	<div class="button-group">
+		<!-- <input type="button" value="全国" class="button" onclick="jumpCountry()" /> -->
+		<input type="button" value="总览" class="button" onclick="jumpBeijing()" /> 
+	</div>
+</body>
+</html>
